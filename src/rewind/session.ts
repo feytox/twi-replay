@@ -19,6 +19,7 @@ export class RewindSession {
   private pausedPosition = 0;
   private rewindTarget = 0;
   private rewindRequest = 0;
+  private liveLatency = DEFAULT_LIVE_LATENCY_SEC;
   private vod: VodPlayer | null = null;
   private player: TwitchPlayer | null = null;
   private playerListeners: AbortController | null = null;
@@ -189,11 +190,16 @@ export class RewindSession {
 
   private tick(): void {
     if (this.vod && this.player) this.vod.setQuality(this.player.qualityPreference());
+    if (this.mode === 'live' && this.player && !this.player.video.paused) this.updateLiveLatency();
     this.render();
   }
 
+  private updateLiveLatency(): void {
+    this.liveLatency = this.player?.liveLatency() ?? this.liveLatency;
+  }
+
   private livePosition(): number {
-    return this.timeline.broadcastPosition() - (this.player?.liveLatency() ?? DEFAULT_LIVE_LATENCY_SEC);
+    return this.timeline.broadcastPosition() - this.liveLatency;
   }
 
   private seekableEnd(): number {

@@ -16,6 +16,6 @@
     "watch": "node build.mjs --watch",
     "typecheck": "tsc",
     "lint": "web-ext lint --source-dir dist",
-    "package": "node build.mjs && web-ext build --source-dir dist --artifacts-dir artifacts --overwrite-dest"
+    "package": "node build.mjs && web-ext build --source-dir dist --artifacts-dir artifacts --filename \"twi-replay-{version}.xpi\" --overwrite-dest"
   }
 }

@@ -16,7 +16,7 @@ const options = {
   outfile: `${OUT_DIR}/content.js`,
   bundle: true,
   format: 'iife',
-  target: ['chrome111', 'firefox140'],
+  target: ['chrome111', 'firefox142'],
   logLevel: 'info',
 };
 

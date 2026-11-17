@@ -21,6 +21,7 @@ export interface ControlsActions {
 const PLAY_ICON = 'M8 5v14l11-7z';
 const PAUSE_ICON = 'M6 5h4v14H6zm8 0h4v14h-4z';
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const LIVE_SNAP_PX = 6;
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, ...children: Node[]): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -33,7 +34,7 @@ function percent(value: number, total: number): string {
   return `${Math.min(Math.max(value / total, 0), 1) * 100}%`;
 }
 
-export function formatTime(seconds: number): string {
+function formatTime(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
   return [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60]
     .map((part) => String(part).padStart(2, '0'))
@@ -128,6 +129,7 @@ export class RewindControls {
 
   private positionAt(event: PointerEvent): number {
     const rect = this.track.getBoundingClientRect();
+    if (rect.right - event.clientX <= LIVE_SNAP_PX) return this.total();
     const fraction = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
     return fraction * this.total();
   }
