@@ -1,0 +1,21 @@
+{
+  "name": "twi-replay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "hls.js": "1.7.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "web-ext": "10.8.0"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc",
+    "lint": "web-ext lint --source-dir dist",
+    "package": "node build.mjs && web-ext build --source-dir dist --artifacts-dir artifacts --overwrite-dest"
+  }
+}
