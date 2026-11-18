@@ -1,10 +1,15 @@
 const PLAYER_SELECTOR = '[data-a-target="video-player"]';
 const PLAYBACK_TOGGLE_SELECTOR = '[data-a-target="player-play-pause-button"], .player-overlay-background button';
 const MAX_FIBER_DEPTH = 60;
+const FRAME_AHEAD_OF_POSITION_SEC = 0.2;
 
 interface MediaPlayerInstance {
   getLiveLatency(): number;
   setLiveLowLatencyEnabled?(enabled: boolean): void;
+  setMuted?(muted: boolean): void;
+  getPath?(): string;
+  getStartOffset?(): number;
+  getPosition?(): number;
 }
 
 interface VodSeekbar {
@@ -53,7 +58,7 @@ export class TwitchPlayer {
   }
 
   placeOverVideo(element: HTMLElement): void {
-    if (element.previousElementSibling !== this.video) this.video.after(element);
+    if (element.parentElement !== this.video.parentElement) this.video.after(element);
   }
 
   play(): void {
@@ -71,6 +76,22 @@ export class TwitchPlayer {
 
   setLowLatency(enabled: boolean): void {
     this.media()?.setLiveLowLatencyEnabled?.(enabled);
+  }
+
+  setMuted(muted: boolean): void {
+    this.media()?.setMuted?.(muted);
+  }
+
+  sessionPlaylistUrl(): string | null {
+    return this.media()?.getPath?.() || null;
+  }
+
+  streamElapsed(): number | null {
+    const media = this.media();
+    const startOffset = media?.getStartOffset?.();
+    const position = media?.getPosition?.();
+    if (startOffset === undefined || position === undefined || this.video.paused) return null;
+    return startOffset + position + FRAME_AHEAD_OF_POSITION_SEC;
   }
 
   prefersLowLatency(): boolean {

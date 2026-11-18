@@ -1,6 +1,7 @@
 import { resolveVodPlaylist, type LiveArchive } from '../twitch/api';
 import type { TwitchPlayer } from '../twitch/player';
 import { RewindControls, type Mode } from '../ui/controls';
+import { LivePlayer } from './live-player';
 import { cycledPlaybackRate, steppedPlaybackRate, storedPlaybackRate, storePlaybackRate } from './playback-rate';
 import { Timeline } from './timeline';
 import { VodPlayer } from './vod-player';
@@ -9,13 +10,27 @@ const DEFAULT_LIVE_LATENCY_SEC = 4;
 const RESUMED_LIVE_LATENCY_SEC = 6;
 const KEY_SEEK_SEC = 10;
 const LIVE_HANDOFF_LEAD_SEC = 1;
-const LIVE_HANDOFF_TIMEOUT_MS = 5000;
+const LIVE_OVERLAY_TIMEOUT_MS = 5000;
+const LIVE_SWITCH_LATENCY_SEC = 20;
+const LIVE_PRELOAD_SEC = 3;
+const LIVE_SWITCH_LEAD_SEC = 1;
+const LIVE_RESUME_MAX_LATENCY_SEC = 20;
+const TWITCH_HANDOFF_LATENCY_SEC = 8;
+const TWITCH_HANDOFF_TIMEOUT_MS = 15_000;
 const TICK_MS = 500;
 const TOGGLE_KEYS = new Set([' ', 'k', 'K']);
 const RATE_STEP_KEYS = new Map<string, -1 | 1>([
   ['Comma', -1],
   ['Period', 1],
 ]);
+
+type Playback = VodPlayer | LivePlayer;
+
+interface TwitchHandoff {
+  restoreMuted: boolean;
+  timer: number;
+  playing: boolean;
+}
 
 function isTextInput(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'));
@@ -28,8 +43,12 @@ export class RewindSession {
   private rewindRequest = 0;
   private liveLatency = DEFAULT_LIVE_LATENCY_SEC;
   private playbackRate = storedPlaybackRate();
-  private vod: VodPlayer | null = null;
-  private handoffTimer: number | undefined;
+  private playback: Playback | null = null;
+  private pendingLive: LivePlayer | null = null;
+  private liveSwitchScheduled = false;
+  private liveUnavailable = false;
+  private twitchHandoff: TwitchHandoff | null = null;
+  private liveOverlayTimer: number | undefined;
   private player: TwitchPlayer | null = null;
   private playerListeners: AbortController | null = null;
   private swallowedKeyUp: string | null = null;
@@ -61,7 +80,9 @@ export class RewindSession {
     if (player.video !== this.player?.video) this.bindPlayer(player);
     this.player = player;
     this.controls.mount(player);
-    if (this.vod) player.placeOverVideo(this.vod.video);
+    for (const playback of [this.playback, this.pendingLive]) {
+      if (playback) player.placeOverVideo(playback.video);
+    }
     this.render();
   }
 
@@ -69,7 +90,7 @@ export class RewindSession {
     window.clearInterval(this.ticker);
     this.listeners.abort();
     this.playerListeners?.abort();
-    this.stopVod();
+    this.stopPlayback();
     this.controls.destroy();
     this.player?.setLowLatency(this.player.prefersLowLatency());
     if (this.mode === 'rewind') this.player?.play();
@@ -87,7 +108,7 @@ export class RewindSession {
 
   private onTwitchPause(): void {
     if (this.mode !== 'live') return;
-    this.stopVod();
+    this.stopPlayback();
     this.pausedPosition = this.livePosition();
     this.mode = 'paused';
     this.render();
@@ -97,13 +118,14 @@ export class RewindSession {
     if (this.mode === 'paused') {
       this.mode = 'live';
       this.render();
-    } else if (this.mode === 'rewind') {
+    } else if (this.mode === 'rewind' && !this.twitchHandoff) {
       this.player?.pause();
     }
   }
 
   private onTwitchPlaying(): void {
-    if (this.mode === 'live') this.stopVod();
+    if (this.mode === 'live') this.stopPlayback();
+    else if (this.twitchHandoff) this.twitchHandoff.playing = true;
   }
 
   private onKeyDown(event: KeyboardEvent): void {
@@ -146,34 +168,45 @@ export class RewindSession {
 
   private togglePlayback(): boolean {
     if (this.mode === 'live') return false;
+    this.cancelTwitchHandoff();
     if (this.mode === 'paused') this.seek(this.pausedPosition, true);
-    else this.vod?.togglePlayback();
+    else if (this.playback instanceof LivePlayer && this.playback.paused && this.playback.latency > LIVE_RESUME_MAX_LATENCY_SEC) {
+      void this.startRewind(this.position(), true);
+    } else this.playback?.togglePlayback();
     this.render();
     return true;
   }
 
-  private seek(position: number, autoplay = this.mode === 'live'): void {
+  private seek(position: number, autoplay = this.mode === 'live' || this.playback?.paused === false): void {
     const target = Math.max(0, position);
+    this.cancelTwitchHandoff();
+    this.cancelLiveSwitch();
     if (target >= this.liveHandoffPosition()) this.goLive();
     else if (this.mode !== 'rewind') void this.startRewind(target, autoplay);
-    else if (this.vod) this.vod.seek(target);
-    else this.rewindTarget = target;
+    else if (!this.playback) this.rewindTarget = target;
+    else if (!this.playback.seek(target)) void this.startRewind(target, autoplay);
   }
 
   private setPlaybackRate(rate: number): void {
     this.playbackRate = rate;
     storePlaybackRate(rate);
-    this.vod?.setPlaybackRate(rate);
+    for (const playback of [this.playback, this.pendingLive]) playback?.setPlaybackRate(rate);
+    if (rate <= 1) this.cancelTwitchHandoff();
     this.render();
   }
 
   private goLive(): void {
     if (this.mode === 'live') return;
+    if (this.twitchHandoff) {
+      this.finishTwitchHandoff();
+      return;
+    }
     this.mode = 'live';
-    if (this.vod && this.player?.video.paused) {
-      this.handoffTimer = window.setTimeout(() => this.stopVod(), LIVE_HANDOFF_TIMEOUT_MS);
+    this.cancelLiveSwitch();
+    if (this.playback && this.player?.video.paused) {
+      this.liveOverlayTimer = window.setTimeout(() => this.stopPlayback(), LIVE_OVERLAY_TIMEOUT_MS);
     } else {
-      this.stopVod();
+      this.stopPlayback();
     }
     this.player?.setLowLatency(false);
     this.player?.play();
@@ -181,9 +214,10 @@ export class RewindSession {
   }
 
   private async startRewind(position: number, autoplay: boolean): Promise<void> {
-    this.stopVod();
+    this.stopPlayback();
     this.mode = 'rewind';
     this.rewindTarget = position;
+    this.liveUnavailable = false;
     this.player?.pause();
     this.render();
 
@@ -191,17 +225,17 @@ export class RewindSession {
     try {
       const playlistUrl = await resolveVodPlaylist(this.archive.videoId);
       if (request !== this.rewindRequest) return;
-      this.vod = new VodPlayer(playlistUrl, {
+      this.playback = new VodPlayer(playlistUrl, {
         startPosition: this.rewindTarget,
         autoplay,
         playbackRate: this.playbackRate,
         quality: this.player?.qualityPreference() ?? null,
         onPlaylistUpdate: (details) => this.timeline.update(details),
-        onStateChange: () => this.onVodStateChange(),
+        onStateChange: () => this.onPlaybackStateChange(),
         onFatalError: (error) => this.failRewind(error),
       });
       this.syncVolume();
-      this.player?.placeOverVideo(this.vod.video);
+      this.player?.placeOverVideo(this.playback.video);
       this.render();
     } catch (error) {
       if (request === this.rewindRequest) this.failRewind(error);
@@ -213,13 +247,22 @@ export class RewindSession {
     this.goLive();
   }
 
-  private onVodStateChange(): void {
+  private onPlaybackStateChange(): void {
     this.followLive();
     this.render();
   }
 
   private followLive(): void {
-    if (this.mode === 'rewind' && this.vod && !this.vod.paused && this.caughtUpWithLive(this.vod)) this.goLive();
+    const playback = this.playback;
+    if (this.mode !== 'rewind' || !playback) return;
+    if (playback.paused) {
+      this.cancelLiveSwitch();
+    } else if (playback instanceof LivePlayer) {
+      this.approachTwitch(playback);
+    } else {
+      this.approachLiveStream(playback);
+      if (!this.liveSwitchScheduled && this.caughtUpWithLive(playback)) this.goLive();
+    }
   }
 
   private caughtUpWithLive(vod: VodPlayer): boolean {
@@ -227,19 +270,144 @@ export class RewindSession {
     return behindHandoff <= (this.playbackRate - 1) * LIVE_HANDOFF_LEAD_SEC || vod.secondsToLiveEdge <= LIVE_HANDOFF_LEAD_SEC;
   }
 
-  private stopVod(): void {
-    window.clearTimeout(this.handoffTimer);
+  private approachLiveStream(vod: VodPlayer): void {
+    const latency = this.timeline.broadcastPosition() - vod.position;
+    if (this.liveUnavailable || this.liveSwitchScheduled || latency > LIVE_SWITCH_LATENCY_SEC) return;
+    const vodStreamOffset = vod.streamOffset;
+    const vodStreamTime = vod.streamTime;
+    if (vodStreamOffset === null || vodStreamTime === null) return;
+    if (!this.pendingLive) {
+      this.pendingLive = this.createLivePlayer(Date.now() - (latency + LIVE_PRELOAD_SEC) * 1000, vodStreamOffset);
+      return;
+    }
+    const live = this.pendingLive;
+    const atRecordingEdge = vod.secondsToLiveEdge <= LIVE_HANDOFF_LEAD_SEC;
+    const switchAt = atRecordingEdge ? vodStreamTime : vodStreamTime + LIVE_SWITCH_LEAD_SEC * this.playbackRate;
+    if (!live.canPlayFrom(switchAt, LIVE_SWITCH_LEAD_SEC)) return;
+    this.liveSwitchScheduled = true;
+    const cued = live.cue(switchAt);
+    if (atRecordingEdge) {
+      void cued.then(() => {
+        if (this.pendingLive === live) this.switchToLiveStream(live);
+      });
+    } else {
+      vod.watchFrames((streamTime) => {
+        if (streamTime < switchAt) return false;
+        this.switchToLiveStream(live);
+        return true;
+      });
+    }
+  }
+
+  private createLivePlayer(startDate: number, vodStreamOffset: number): LivePlayer | null {
+    const playlistUrl = this.player?.sessionPlaylistUrl();
+    if (!playlistUrl) {
+      this.liveUnavailable = true;
+      return null;
+    }
+    const live: LivePlayer = new LivePlayer(playlistUrl, {
+      startDate,
+      vodStreamOffset,
+      playbackRate: this.playbackRate,
+      quality: this.player?.qualityPreference() ?? null,
+      onStateChange: () => this.onPlaybackStateChange(),
+      onFatalError: (error) => this.failLiveStream(live, error),
+    });
+    this.player?.placeOverVideo(live.video);
+    return live;
+  }
+
+  private switchToLiveStream(live: LivePlayer): void {
+    this.liveSwitchScheduled = false;
+    this.pendingLive = null;
+    this.playback?.destroy();
+    this.playback = live;
+    this.syncVolume();
+    live.show();
+    live.play();
+    this.render();
+  }
+
+  private failLiveStream(live: LivePlayer, error: Error): void {
+    if (live === this.playback) {
+      this.failRewind(error);
+      return;
+    }
+    console.warn('[twi-replay] live stream is unavailable, staying on the recording', error);
+    this.cancelLiveSwitch();
+    this.liveUnavailable = true;
+  }
+
+  private cancelLiveSwitch(): void {
+    if (this.liveSwitchScheduled && this.playback) this.playback.cancelFrameWatch();
+    this.liveSwitchScheduled = false;
+    this.pendingLive?.destroy();
+    this.pendingLive = null;
+  }
+
+  private approachTwitch(live: LivePlayer): void {
+    const player = this.player;
+    if (!player || this.twitchHandoff || this.playbackRate <= 1 || live.latency > TWITCH_HANDOFF_LATENCY_SEC) return;
+    this.twitchHandoff = {
+      restoreMuted: player.video.muted,
+      timer: window.setTimeout(() => this.finishTwitchHandoff(), TWITCH_HANDOFF_TIMEOUT_MS),
+      playing: false,
+    };
+    player.setMuted(true);
+    player.setLowLatency(false);
+    player.play();
+    live.watchFrames((streamTime) => {
+      if (!this.caughtUpWithTwitch(live, streamTime)) return false;
+      this.finishTwitchHandoff();
+      return true;
+    });
+  }
+
+  private caughtUpWithTwitch(live: LivePlayer, streamTime: number): boolean {
+    const elapsed = this.twitchHandoff?.playing ? this.player?.streamElapsed() : null;
+    const twitchStreamTime = elapsed == null ? null : live.streamTimeAtElapsed(elapsed);
+    return twitchStreamTime !== null && streamTime >= twitchStreamTime;
+  }
+
+  private finishTwitchHandoff(): void {
+    const handoff = this.twitchHandoff;
+    this.twitchHandoff = null;
+    if (handoff) {
+      window.clearTimeout(handoff.timer);
+      this.player?.setMuted(handoff.restoreMuted);
+    }
+    this.mode = 'live';
+    this.stopPlayback();
+    this.render();
+  }
+
+  private cancelTwitchHandoff(): void {
+    const handoff = this.twitchHandoff;
+    if (!handoff) return;
+    this.twitchHandoff = null;
+    window.clearTimeout(handoff.timer);
+    this.playback?.cancelFrameWatch();
+    this.player?.pause();
+    this.player?.setMuted(handoff.restoreMuted);
+  }
+
+  private stopPlayback(): void {
+    window.clearTimeout(this.liveOverlayTimer);
+    this.cancelTwitchHandoff();
+    this.cancelLiveSwitch();
     this.rewindRequest++;
-    this.vod?.destroy();
-    this.vod = null;
+    this.playback?.destroy();
+    this.playback = null;
   }
 
   private syncVolume(): void {
-    if (this.vod && this.player) this.vod.setVolume(this.player.video.volume, this.player.video.muted);
+    if (!this.player || this.twitchHandoff) return;
+    for (const playback of [this.playback, this.pendingLive]) playback?.setVolume(this.player.video.volume, this.player.video.muted);
   }
 
   private tick(): void {
-    if (this.vod && this.player) this.vod.setQuality(this.player.qualityPreference());
+    const quality = this.player?.qualityPreference() ?? null;
+    for (const playback of [this.playback, this.pendingLive]) playback?.setQuality(quality);
     if (this.mode === 'live' && this.player && !this.player.video.paused) this.updateLiveLatency();
     this.followLive();
     this.render();
@@ -259,7 +427,7 @@ export class RewindSession {
 
   private position(): number {
     if (this.mode === 'paused') return this.pausedPosition;
-    if (this.mode === 'rewind') return this.vod?.position ?? this.rewindTarget;
+    if (this.mode === 'rewind') return this.playback?.position ?? this.rewindTarget;
     return this.livePosition();
   }
 
@@ -268,11 +436,11 @@ export class RewindSession {
       mode: this.mode,
       position: this.position(),
       livePosition: this.livePosition(),
-      recordedEnd: this.timeline.recordedEnd(),
+      recordedEnd: Math.max(this.timeline.recordedEnd(), this.playback instanceof LivePlayer ? this.playback.position : 0),
       liveFrom: this.liveHandoffPosition(),
       playbackRate: this.playbackRate,
-      playing: this.vod !== null && !this.vod.paused,
-      loading: this.mode === 'rewind' && (this.vod === null || this.vod.buffering),
+      playing: this.playback !== null && !this.playback.paused,
+      loading: this.mode === 'rewind' && (this.playback === null || this.playback.buffering),
     });
   }
 }
