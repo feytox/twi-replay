@@ -4,11 +4,13 @@ import * as esbuild from 'esbuild';
 const OUT_DIR = 'dist';
 
 await rm(OUT_DIR, { recursive: true, force: true });
-await mkdir(OUT_DIR);
+await mkdir(`${OUT_DIR}/licenses`, { recursive: true });
 await Promise.all([
   cp('manifest.json', `${OUT_DIR}/manifest.json`),
   cp('icons', `${OUT_DIR}/icons`, { recursive: true, filter: (source) => !source.endsWith('.svg') }),
   cp('src/content.css', `${OUT_DIR}/content.css`),
+  cp('licenses', `${OUT_DIR}/licenses`, { recursive: true }),
+  cp('node_modules/hls.js/LICENSE', `${OUT_DIR}/licenses/hls.js.txt`),
 ]);
 
 const options = {
