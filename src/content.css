@@ -8,7 +8,7 @@
   visibility: hidden;
 }
 
-[data-twr-mode="rewind"] .twr-video--ready {
+.twr-video--ready {
   visibility: visible;
 }
 
@@ -191,4 +191,16 @@
 
 [data-twr-mode="live"] .twr-live__dot {
   background: #eb0400;
+}
+
+.twr-rate {
+  min-width: 44px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-twr-mode="live"] .twr-rate {
+  display: none;
 }

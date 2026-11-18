@@ -1,5 +1,6 @@
 import type { LevelDetails } from 'hls.js/light';
 
+const RECORDED_AT_DELAY_MS = 2000;
 const DEFAULT_RECORDING_LAG_SEC = 10;
 
 interface Anchor {
@@ -16,15 +17,18 @@ export class Timeline {
   private recorded: Anchor;
 
   constructor(recordedAt: number) {
-    this.broadcast = { position: 0, time: recordedAt };
-    this.recorded = { position: -DEFAULT_RECORDING_LAG_SEC, time: recordedAt };
+    const start = recordedAt - RECORDED_AT_DELAY_MS;
+    this.broadcast = { position: 0, time: start };
+    this.recorded = { position: -DEFAULT_RECORDING_LAG_SEC, time: start };
   }
 
   update(details: LevelDetails): void {
     const last = details.fragments.at(-1);
-    if (!last || last.programDateTime === null) return;
-    this.broadcast = { position: last.end, time: last.programDateTime + last.duration * 1000 };
+    if (!last) return;
     this.recorded = { position: last.end, time: Date.now() };
+    if (last.programDateTime !== null) {
+      this.broadcast = { position: last.end, time: last.programDateTime + last.duration * 1000 };
+    }
   }
 
   broadcastPosition(): number {

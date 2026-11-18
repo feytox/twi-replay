@@ -4,6 +4,7 @@ const MAX_FIBER_DEPTH = 60;
 
 interface MediaPlayerInstance {
   getLiveLatency(): number;
+  setLiveLowLatencyEnabled?(enabled: boolean): void;
 }
 
 interface Fiber {
@@ -56,9 +57,16 @@ export class TwitchPlayer {
   }
 
   liveLatency(): number | null {
-    this.mediaPlayer ??= findMediaPlayer(this.root);
-    const latency = this.mediaPlayer?.getLiveLatency();
+    const latency = this.media()?.getLiveLatency();
     return latency !== undefined && Number.isFinite(latency) && latency >= 0 ? latency : null;
+  }
+
+  setLowLatency(enabled: boolean): void {
+    this.media()?.setLiveLowLatencyEnabled?.(enabled);
+  }
+
+  prefersLowLatency(): boolean {
+    return localStorage.getItem('lowLatencyModeEnabled') !== 'false';
   }
 
   qualityPreference(): string | null {
@@ -68,6 +76,11 @@ export class TwitchPlayer {
     } catch {
       return null;
     }
+  }
+
+  private media(): MediaPlayerInstance | null {
+    this.mediaPlayer ??= findMediaPlayer(this.root);
+    return this.mediaPlayer;
   }
 
   private togglePlayback(): void {

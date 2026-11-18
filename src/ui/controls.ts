@@ -7,7 +7,9 @@ export interface ControlsState {
   mode: Mode;
   position: number;
   livePosition: number;
-  seekableEnd: number;
+  recordedEnd: number;
+  liveFrom: number;
+  playbackRate: number;
   playing: boolean;
   loading: boolean;
 }
@@ -16,6 +18,7 @@ export interface ControlsActions {
   seek(position: number): void;
   goLive(): void;
   togglePlayback(): void;
+  cyclePlaybackRate(): void;
 }
 
 const PLAY_ICON = 'M8 5v14l11-7z';
@@ -53,6 +56,7 @@ export class RewindControls {
   private readonly playIcon = document.createElementNS(SVG_NS, 'path');
   private readonly playButton = element('button', 'twr-button twr-play');
   private readonly liveButton = element('button', 'twr-button twr-live', element('span', 'twr-live__dot'), document.createTextNode('Live'));
+  private readonly rateButton = element('button', 'twr-button twr-rate');
   private readonly spinner = element('div', 'twr-spinner');
   private readonly activity = new IdleTracker(() => this.renderRootState());
   private root: HTMLElement | null = null;
@@ -66,7 +70,9 @@ export class RewindControls {
     this.playButton.append(icon);
     this.playButton.addEventListener('click', () => actions.togglePlayback());
     this.liveButton.addEventListener('click', () => actions.goLive());
-    for (const button of [this.playButton, this.liveButton]) {
+    this.rateButton.addEventListener('click', () => actions.cyclePlaybackRate());
+    this.rateButton.title = 'Playback speed (Shift+. / Shift+,)';
+    for (const button of [this.playButton, this.liveButton, this.rateButton]) {
       button.addEventListener('mousedown', (event) => event.preventDefault());
     }
     this.bindSeekbar();
@@ -80,6 +86,7 @@ export class RewindControls {
     const leftControls = player.leftControls;
     if (leftControls && this.playButton.parentElement !== leftControls) leftControls.prepend(this.playButton);
     if (leftControls && this.liveButton.parentElement !== leftControls) leftControls.append(this.liveButton);
+    if (leftControls && this.rateButton.parentElement !== leftControls) leftControls.append(this.rateButton);
     const videoArea = player.video.parentElement;
     if (videoArea && this.spinner.parentElement !== videoArea) videoArea.append(this.spinner);
   }
@@ -89,7 +96,7 @@ export class RewindControls {
     this.state = state;
     const position = this.dragPosition ?? state.position;
     const total = this.total();
-    this.seekable.style.width = percent(state.seekableEnd, total);
+    this.seekable.style.width = percent(state.recordedEnd, total);
     this.played.style.width = percent(position, total);
     this.thumb.style.left = percent(position, total);
     this.currentTime.textContent = formatTime(position);
@@ -98,6 +105,7 @@ export class RewindControls {
     this.playIcon.setAttribute('d', state.playing ? PAUSE_ICON : PLAY_ICON);
     this.playButton.setAttribute('aria-label', state.playing ? 'Pause (space/k)' : 'Play (space/k)');
     this.liveButton.title = state.mode === 'live' ? 'Watching live' : 'Go to live';
+    this.rateButton.textContent = `${state.playbackRate}x`;
     this.renderRootState();
   }
 
@@ -106,6 +114,7 @@ export class RewindControls {
     this.seekbar.remove();
     this.playButton.remove();
     this.liveButton.remove();
+    this.rateButton.remove();
     this.spinner.remove();
     if (this.root) {
       delete this.root.dataset.twrMode;
@@ -124,7 +133,7 @@ export class RewindControls {
 
   private total(): number {
     const state = this.state;
-    return state ? Math.max(state.livePosition, state.seekableEnd, state.position, 1) : 1;
+    return state ? Math.max(state.livePosition, state.recordedEnd, state.position, 1) : 1;
   }
 
   private positionAt(event: PointerEvent): number {
@@ -167,8 +176,8 @@ export class RewindControls {
 
   private showTooltip(event: PointerEvent): void {
     const position = this.positionAt(event);
-    const beyondSeekable = this.state !== null && position >= this.state.seekableEnd;
-    this.tooltip.textContent = beyondSeekable ? 'Live' : formatTime(position);
+    const live = this.state !== null && position >= this.state.liveFrom;
+    this.tooltip.textContent = live ? 'Live' : formatTime(position);
     this.tooltip.style.left = percent(position, this.total());
   }
 }
