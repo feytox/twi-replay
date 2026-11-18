@@ -7,9 +7,17 @@ interface MediaPlayerInstance {
   setLiveLowLatencyEnabled?(enabled: boolean): void;
 }
 
+interface VodSeekbar {
+  state: { vodLength: number };
+  setState(state: { vodLength: number }): void;
+}
+
 interface Fiber {
   memoizedProps?: { mediaPlayerInstance?: Partial<MediaPlayerInstance> } | null;
+  stateNode?: { state?: { vodLength?: unknown } | null; setState?: unknown } | null;
   return: Fiber | null;
+  child: Fiber | null;
+  sibling: Fiber | null;
 }
 
 export class TwitchPlayer {
@@ -69,6 +77,14 @@ export class TwitchPlayer {
     return localStorage.getItem('lowLatencyModeEnabled') !== 'false';
   }
 
+  extendVodLength(): void {
+    const duration = this.video.duration;
+    if (!Number.isFinite(duration)) return;
+    for (const seekbar of findVodSeekbars(this.root)) {
+      if (duration > seekbar.state.vodLength) seekbar.setState({ vodLength: duration });
+    }
+  }
+
   qualityPreference(): string | null {
     try {
       const stored = JSON.parse(localStorage.getItem('video-quality') ?? 'null');
@@ -91,12 +107,31 @@ export class TwitchPlayer {
   }
 }
 
+function fiberOf(element: HTMLElement): Fiber | undefined {
+  const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber$'));
+  return fiberKey ? (element as unknown as Record<string, Fiber | undefined>)[fiberKey] : undefined;
+}
+
 function findMediaPlayer(root: HTMLElement): MediaPlayerInstance | null {
-  const fiberKey = Object.keys(root).find((key) => key.startsWith('__reactFiber$'));
-  let fiber = fiberKey ? (root as unknown as Record<string, Fiber | undefined>)[fiberKey] : undefined;
+  let fiber = fiberOf(root);
   for (let depth = 0; fiber && depth < MAX_FIBER_DEPTH; depth++, fiber = fiber.return ?? undefined) {
     const candidate = fiber.memoizedProps?.mediaPlayerInstance;
     if (typeof candidate?.getLiveLatency === 'function') return candidate as MediaPlayerInstance;
   }
   return null;
+}
+
+function findVodSeekbars(root: HTMLElement): VodSeekbar[] {
+  const seekbars: VodSeekbar[] = [];
+  const pending = [fiberOf(root)?.child].filter((fiber) => fiber != null);
+  for (let fiber = pending.pop(); fiber; fiber = pending.pop()) {
+    if (isVodSeekbar(fiber.stateNode)) seekbars.push(fiber.stateNode);
+    if (fiber.sibling) pending.push(fiber.sibling);
+    if (fiber.child) pending.push(fiber.child);
+  }
+  return seekbars;
+}
+
+function isVodSeekbar(node: Fiber['stateNode']): node is VodSeekbar {
+  return typeof node?.state?.vodLength === 'number' && typeof node.setState === 'function';
 }

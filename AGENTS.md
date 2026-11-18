@@ -7,6 +7,7 @@ Browser extension (MV3, one manifest for Chrome and Firefox) that adds rewind an
 - Twitch's own Stream Rewind (subs with ad-free, Turbo) is gated by `DVRVideoIDQuery` returning a per-viewer `vodID`; enabling it would mean faking Turbo or sub state in Apollo, so the extension builds its own UI and steps aside when the native seekbar (`data-a-target="player-seekbar"`) is present.
 - The VOD media playlist is an EVENT playlist of 10 s segments whose end trails the broadcaster by 1-11 s. Only some VODs carry `#EXT-X-PROGRAM-DATE-TIME`; without it `Timeline` anchors VOD zero at the archive's `recordedAt` minus 2 s.
 - Twitch's live player cannot hold a position: `pause()` unloads the stream, play resumes at the live edge, and `seekTo` and `setPlaybackRate` are ignored. So going back to live means the VOD catching up with the point where Twitch will resume, with Low Latency off to make that point earlier.
+- On `/videos/<id>` of a stream still recording, Twitch's player keeps loading new segments, but its React seekbar components (two instances) freeze `state.vodLength` at load and end the video there; `extendVodLength` raises it on each `durationchange`.
 - While rewinding, Twitch's player stays paused: it covers the video with an invisible full-size Play button (`.player-overlay-background button`), keeps its controls visible and toggles playback on space keyup. `RewindSession` intercepts clicks and keys in the capture phase, `IdleTracker` hides the overlay.
 
 ## Verifying changes

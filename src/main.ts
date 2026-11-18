@@ -25,6 +25,8 @@ const RESERVED_PATHS = new Set([
   'wallet',
 ]);
 
+const VIDEO_PATH = /^\/videos\/\d+/;
+
 function channelFromPath(pathname: string): string | null {
   const match = /^\/([a-z0-9_]+)(?:\/|$)/i.exec(pathname);
   const login = match?.[1].toLowerCase();
@@ -86,4 +88,12 @@ class App {
   }
 }
 
+function followGrowingVods(): void {
+  const extend = () => {
+    if (VIDEO_PATH.test(location.pathname)) TwitchPlayer.find()?.extendVodLength();
+  };
+  document.addEventListener('durationchange', extend, { capture: true });
+}
+
 new App().start();
+followGrowingVods();
